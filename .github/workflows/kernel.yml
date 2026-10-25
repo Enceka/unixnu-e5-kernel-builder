@@ -1,0 +1,132 @@
+name: kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      unixnu_ref:
+        description: "UniXNU ref to build with"
+        required: true
+        default: "main"
+      device_ref:
+        description: "Enceka/UniXNU-e5 ref"
+        required: true
+        default: "main"
+      xcode:
+        description: "Xcode version of the macos-26 image"
+        required: true
+        default: "26.6"
+      adt:
+        description: "Also generate kernel.macho.adt from the device tree"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_ENV_HINTS: 1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    # macos-26 is arm64 and carries the Xcode 26 line the UniXNU build is developed with.
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode }}.app/Contents/Developer
+      UNIXNU_DEVICE: ${{ github.workspace }}/device
+      DEFCONFIG: e5_defconfig
+    steps:
+      - name: Check out UniXNU
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: ${{ inputs.unixnu_ref }}
+          persist-credentials: false
+
+      - name: Check out the device repository
+        uses: actions/checkout@v4
+        with:
+          repository: Enceka/UniXNU-e5
+          ref: ${{ inputs.device_ref }}
+          path: device
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install host tools
+        run: |
+          brew install llvm lld mtools dtc unifdef
+          echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+
+      - name: Report the runner toolchain
+        run: |
+          sw_vers; uname -m; xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version || true
+          python3 --version; df -h "$GITHUB_WORKSPACE"
+
+      - name: Select the defconfig
+        run: ./unixnu defconfig "$DEFCONFIG"
+
+      - name: Build the kernel
+        env:
+          # prepare-xnu-source.py lists Apple sources through the GitHub API.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./unixnu build kernel
+
+      - name: Generate the ADT
+        if: inputs.adt
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, 'scripts')
+          from pathlib import Path
+          from unixnu.cli import parser
+          from unixnu.config import Context
+          from unixnu.devicetree import compile_hardware, generate
+          import os
+          ctx = Context(parser().parse_args(['defconfig', os.environ['DEFCONFIG']]))
+          dtb = compile_hardware(ctx)
+          adt = generate(dtb, ctx.board, unique_chip_id=None, data=False, trust=False, addon=False)
+          out = Path(ctx.work) / 'kernel/kernel.macho.adt'
+          out.write_bytes(adt)
+          print(f'adt: {out} ({len(adt)} bytes)')
+          PY
+
+      - name: Collect the outputs
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          find "$GITHUB_WORKSPACE/out" -maxdepth 6 -type f \( -name 'kernel.macho*' -o -name '*.dtb' \) -print -exec cp {} "$RUNNER_TEMP/out/" \; || true
+          ls -la "$RUNNER_TEMP/out"
+          # sanity: the kernel must be present for the artifact to be useful
+          test -s "$RUNNER_TEMP/out/kernel.macho"
+
+      - name: Upload the kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-kernel-${{ inputs.unixnu_ref }}-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/out/*
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload the build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e5-kernel-logs-${{ github.run_number }}
+          path: |
+            ${{ github.workspace }}/out/**/logs/*.log
+          retention-days: 1
+          if-no-files-found: warn
