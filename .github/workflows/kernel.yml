@@ -98,7 +98,9 @@ jobs:
           import os
           ctx = Context(parser().parse_args(['defconfig', os.environ['DEFCONFIG']]))
           dtb = compile_hardware(ctx)
-          adt = generate(dtb, ctx.board, unique_chip_id=None, data=False, trust=False, addon=False)
+          adt_opts = ((ctx.board.get('payload') or {}).get('adt') or {})
+          data = bool(adt_opts.get('packed_data_ramdisk') or adt_opts.get('data_ramdisk'))
+          adt = generate(dtb, ctx.board, unique_chip_id=None, data=data, trust=False, addon=False)
           out = Path(ctx.work) / 'kernel/kernel.macho.adt'
           out.write_bytes(adt)
           print(f'adt: {out} ({len(adt)} bytes)')
