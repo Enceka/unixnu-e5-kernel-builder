@@ -1,0 +1,94 @@
+name: seed-grow
+
+# Grow the private 128 MiB E5 Data fixture (APFS container, volume UUID
+# 30ADC749-...) to a 4 GiB raw image on this macOS runner, preserving the
+# volume UUID and content, and publish the gzip to the private relay repo's
+# seed-grown branch. The Apple-derived bytes only ever exist on the runner
+# disk, in the private relay repo, and in this repo's short-lived run logs;
+# nothing lands in this public repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      gib:
+        description: "Target size in GiB (default 4)"
+        default: "4"
+      from_ref:
+        description: "Relay branch/ref holding seed-128m.gz"
+        default: "seed-input"
+
+permissions:
+  contents: read
+
+jobs:
+  grow:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fetch the pristine fixture from the private relay
+        env:
+          GH_TOKEN: ${{ secrets.E5_BUILDER_TOKEN }}
+          FROM_REF: ${{ github.event.inputs.from_ref }}
+        run: |
+          set -euo pipefail
+          mkdir out && cd out
+          curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/Enceka/unixnu-build/contents/seed-128m.gz?ref=$FROM_REF" \
+            -H "Accept: application/vnd.github.raw" -o seed-128m.gz
+          gunzip -k seed-128m.gz
+          test "$(stat -f%z seed-128m)" = "134217728"
+
+      - name: Grow the APFS container to fill the raw image
+        env:
+          GIB: ${{ github.event.inputs.gib }}
+        run: |
+          set -euo pipefail
+          cd out
+          python3 - "$GIB" <<'PY'
+          import sys
+          gib = int(sys.argv[1])
+          with open('seed-grow.raw', 'wb') as f:
+              f.truncate(gib << 30)
+              f.seek(0)
+              f.write(open('seed-128m', 'rb').read())
+          PY
+          attached=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage \
+            -nomount -nobrowse -plist out/seed-grow.raw)
+          store=$(python3 -c "import json,sys; print(next(e['dev-entry'] for e in json.loads(sys.argv[1])['system-entities']))" "$attached")
+          store_name=$(basename "$store")
+          listing=$(diskutil apfs list -plist)
+          container=$(python3 -c "import json,sys; print(next(c['ContainerReference'] for c in json.loads(sys.argv[1])['Containers'] if any(s['DeviceIdentifier'] == sys.argv[2] for s in c.get('PhysicalStores', []))))" "$listing" "$store_name")
+          echo "store $store container $container"
+          diskutil apfs resizeContainer "$container" 0
+          hdiutil detach "$store" -force
+          python3 - "$GIB" <<'PY'
+          import sys
+          gib = int(sys.argv[1])
+          h = open('out/seed-grow.raw', 'rb').read(4096)
+          assert h[32:36] == b'NXSB', 'not NXSB after grow'
+          blocks = int.from_bytes(h[40:48], 'little')
+          assert blocks * 4096 == gib << 30, f'container blocks {blocks} != {gib} GiB'
+          print('grown container blocks', blocks)
+          PY
+
+      - name: Publish the grown seed to the private relay
+        env:
+          GH_TOKEN: ${{ secrets.E5_BUILDER_TOKEN }}
+          GIB: ${{ github.event.inputs.gib }}
+        run: |
+          set -euo pipefail
+          cd out && gzip -1 -c seed-grow.raw > seed-grown.gz && cd ..
+          ls -la out/seed-grown.gz
+          rm -rf relay
+          git clone -q "https://x-access-token:${GH_TOKEN}@github.com/Enceka/unixnu-build.git" relay
+          cd relay
+          git config user.name "seed-grow"
+          git config user.email "seed-grow@users.noreply.github.com"
+          git switch --orphan seed-grown
+          cp ../out/seed-grown.gz .
+          printf '{\n  "grown_from": "seed-128m.gz @ %s",\n  "gib": "%s",\n  "sha256_gz": "%s"\n}\n' \
+            "${{ github.event.inputs.from_ref }}" "$GIB" \
+            "$(shasum -a 256 ../out/seed-grown.gz | cut -d' ' -f1)" > seed-meta.json
+          git add .
+          git commit -qm "grown ${GIB}GiB Data seed from builder run $GITHUB_RUN_ID"
+          git push -f origin seed-grown
