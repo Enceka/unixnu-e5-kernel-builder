@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: Fetch the pristine fixture from the private relay
         env:
-          GH_TOKEN: ${{ secrets.E5_BUILDER_TOKEN }}
+          GH_TOKEN: ${{ secrets.E5_RELAY_TOKEN }}
           FROM_REF: ${{ github.event.inputs.from_ref }}
         run: |
           set -euo pipefail
@@ -73,7 +73,7 @@ jobs:
 
       - name: Publish the grown seed to the private relay
         env:
-          GH_TOKEN: ${{ secrets.E5_BUILDER_TOKEN }}
+          GH_TOKEN: ${{ secrets.E5_RELAY_TOKEN }}
           GIB: ${{ github.event.inputs.gib }}
         run: |
           set -euo pipefail
