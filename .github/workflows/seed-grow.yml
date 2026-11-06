@@ -47,12 +47,12 @@ jobs:
           python3 -c "import os,sys; gib=int(sys.argv[1]); f=open('seed-grow.raw','wb'); f.truncate(gib<<30); f.seek(0); f.write(open('seed-128m','rb').read()); f.close(); print('raw bytes', os.path.getsize('seed-grow.raw'))" "$GIB"
           hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount -nobrowse seed-grow.raw >attach.log 2>&1
           echo "--- attach.log:"; cat attach.log
-          store=$(grep -o '/dev/disk[0-9]*' attach.log | tail -1)
-          test -n "$store" || { echo "no device node in attach output"; exit 1; }
-          echo "store=$store"
+          store=$(grep '41504653-0000-11AA' attach.log | awk '{print $1}' | tail -1)
+          test -n "$store" || { echo "no APFS partition in attach output"; exit 1; }
+          echo "APFS partition=$store"
           diskutil apfs list -plist >listing.plist
           store_name=$(basename "$store")
-          container=$(python3 -c "import json,sys; ls=json.load(open(sys.argv[1])); print(next(c['ContainerReference'] for c in ls['Containers'] if any(s['DeviceIdentifier']==sys.argv[2] for s in c.get('PhysicalStores',[]))))" listing.plist "$store_name") || { echo "--- apfs list:"; plutil -p listing.plist | head -60; exit 1; }
+          container=$(python3 -c "import plistlib,sys; ls=plistlib.load(open(sys.argv[1],'rb')); print(next(c['ContainerReference'] for c in ls['Containers'] if any(s['DeviceIdentifier']==sys.argv[2] for s in c.get('PhysicalStores',[]))))" listing.plist "$store_name") || { echo "--- apfs list:"; plutil -p listing.plist | head -80; exit 1; }
           echo "container=$container"
           diskutil apfs resizeContainer "$container" 0
           hdiutil detach "$store" -force || true
