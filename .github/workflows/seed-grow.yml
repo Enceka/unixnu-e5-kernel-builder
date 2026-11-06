@@ -53,7 +53,7 @@ jobs:
               f.write(open('seed-128m', 'rb').read())
           PY
           attached=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage \
-            -nomount -nobrowse -plist out/seed-grow.raw)
+            -nomount -nobrowse -plist seed-grow.raw)
           store=$(python3 -c "import json,sys; print(next(e['dev-entry'] for e in json.loads(sys.argv[1])['system-entities']))" "$attached")
           store_name=$(basename "$store")
           listing=$(diskutil apfs list -plist)
@@ -64,7 +64,7 @@ jobs:
           python3 - "$GIB" <<'PY'
           import sys
           gib = int(sys.argv[1])
-          h = open('out/seed-grow.raw', 'rb').read(4096)
+          h = open('seed-grow.raw', 'rb').read(4096)
           assert h[32:36] == b'NXSB', 'not NXSB after grow'
           blocks = int.from_bytes(h[40:48], 'little')
           assert blocks * 4096 == gib << 30, f'container blocks {blocks} != {gib} GiB'
