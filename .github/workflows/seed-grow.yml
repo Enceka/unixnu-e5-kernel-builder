@@ -51,11 +51,19 @@ jobs:
           test -n "$store" || { echo "no APFS partition in attach output"; exit 1; }
           echo "APFS partition=$store"
           diskutil apfs list -plist >listing.plist
-          store_name=$(basename "$store")
-          container=$(python3 -c "import plistlib,sys; ls=plistlib.load(open(sys.argv[1],'rb')); print(next(c['ContainerReference'] for c in ls['Containers'] if any(s['DeviceIdentifier']==sys.argv[2] for s in c.get('PhysicalStores',[]))))" listing.plist "$store_name") || { echo "--- apfs list:"; plutil -p listing.plist | head -80; exit 1; }
-          echo "container=$container"
-          diskutil apfs resizeContainer "$container" 0
-          hdiutil detach "$store" -force || true
+          # The fixture is a BARE container (no GPT): macOS synthesizes the
+          # APFS stack on attach but diskutil's container listing may not
+          # adopt it, so try the synthesized devices directly, whole disk
+          # first (bare container at LBA 0), then the pseudo-partition.
+          whole=$(grep -o '/dev/disk[0-9]*' attach.log | tail -2 | head -1)
+          container=""
+          for candidate in "$whole" "$store"; do
+            if diskutil apfs resizeContainer "$candidate" 0; then container="$candidate"; break; fi
+            echo "--- resizeContainer $candidate failed, trying next"
+          done
+          test -n "$container" || { echo "--- apfs list:"; plutil -p listing.plist; echo "--- attach.log:"; cat attach.log; exit 1; }
+          echo "resized via $container"
+          hdiutil detach "$whole" -force || hdiutil detach "$store" -force || true
           python3 -c "import sys; gib=int(sys.argv[1]); h=open('seed-grow.raw','rb').read(4096); assert h[32:36]==b'NXSB','not NXSB after grow'; blocks=int.from_bytes(h[40:48],'little'); assert blocks*4096==gib<<30, f'container blocks {blocks} != {gib} GiB'; print('grown container blocks', blocks)" "$GIB"
 
       - name: Publish the grown seed to the private relay
